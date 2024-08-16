@@ -1,0 +1,66 @@
+#!/bin/env bash
+
+#shellcheck source=/dev/null
+#shellcheck disable=SC2012
+
+# Track agent state in a host-specific file, in case we're using a shared filesystem across
+# multiple machines.
+SSH_AGENT_FILE=$HOME/.ssh/agent.${HOSTNAME}
+
+# If there's a forwarded agent, it gets precedent. If there's not a forwarded agent, check for an
+# existing ssh-agent env file.
+if ! [[ -S "${SSH_AUTH_SOCK}" ]]; then
+  [[ -f "${SSH_AGENT_FILE}" ]] && . "${SSH_AGENT_FILE}" 1>/dev/null
+fi
+
+if [[ -z ${SSH_AGENT_PID} ]]; then
+  ssh_agent="ip: $(echo "${SSH_CONNECTION}" | awk '{print $1}')"
+else
+  ssh_agent="pid: ${SSH_AGENT_PID}"
+fi
+
+##########
+# Determine which agent is active.
+agent() {
+  if [[ -z ${SSH_AGENT_PID} ]]; then
+    ssh_agent="ip: $(echo "${SSH_CONNECTION}" | awk '{print $1}')"
+  else
+    ssh_agent="pid: ${SSH_AGENT_PID}"
+  fi
+  ssh-add -l
+}
+
+##########
+# Update to a new forwarded agent. Sometimes old SSH sessions will have an outdated socket; this
+# will use the freshest one.
+agent-update() {
+  sock="$(ls -1tr /tmp/ssh-*/* | tail -n1 2>/dev/null)"
+  if [[ ! -S ${sock} ]]; then
+    echo "No SSH socket found."
+    return 1
+  fi
+  SSH_AUTH_SOCK="$(ls -1tr /tmp/ssh-*/* | tail -n1 2>/dev/null)"
+  export SSH_AUTH_SOCK
+  ssh-add -l
+}
+
+ssh-add -l &>/dev/null
+
+case "$?" in
+  0)
+    ssh-add -l
+    ;;
+  1)
+    echo "ssh-agent (${ssh_agent}) has no identities."
+    ssh-add
+    ;;
+  *)
+    if ! ([ -S "${SSH_AUTH_SOCK}" ] && kill -0 "${SSH_AGENT_PID}"); then
+      echo "Starting new ssh-agent."
+      mkdir -p $(dirname ${SSH_AGENT_FILE})
+      ssh-agent > "${SSH_AGENT_FILE}"
+      . "${SSH_AGENT_FILE}" >/dev/null
+      ssh-add
+      source "${BASH_SOURCE[0]}"
+    fi
+esac
